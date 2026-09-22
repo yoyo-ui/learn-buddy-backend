@@ -12,11 +12,15 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// تخزين الملفات مؤقتاً في الذاكرة (Memory Storage) لتوافقية سيرفرات Vercel والبيئة السحابية
+// تخزين الملفات مؤقتاً في الذاكرة (Memory Storage) لتوافقية سيرفرات Vercel
 const upload = multer({ storage: multer.memoryStorage() });
 
+// إعداد الاتصال بقاعدة البيانات مع تفعيل الـ SSL لضمان التوافق مع Supabase
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // إعداد Google Drive API باستخدام الـ Environment Variables
@@ -60,6 +64,7 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ id: admin.id, username: admin.username }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ message: 'تم تسجيل الدخول بنجاح', token });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'خطأ في الخادم الداخلي' });
   }
 });
@@ -70,6 +75,7 @@ app.get('/api/categories', async (req, res) => {
     const result = await pool.query('SELECT * FROM categories ORDER BY sort_order ASC, created_at DESC');
     res.json(result.rows);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'فشل في جلب المواد' });
   }
 });
@@ -83,6 +89,7 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
     );
     res.status(201).json({ message: 'تمت إضافة المادة بنجاح', category: result.rows[0] });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'فشل في إضافة المادة' });
   }
 });
@@ -94,6 +101,7 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'المادة غير موجودة' });
     res.json({ message: 'تم حذف المادة بنجاح' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'فشل في حذف المادة' });
   }
 });
@@ -105,6 +113,7 @@ app.get('/api/content/category/:categoryId', async (req, res) => {
     const result = await pool.query('SELECT * FROM content WHERE category_id = $1 ORDER BY sort_order ASC', [categoryId]);
     res.json(result.rows);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'فشل في جلب المحتوى' });
   }
 });
@@ -157,6 +166,7 @@ app.delete('/api/content/:id', authenticateToken, async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'المحتوى غير موجود' });
     res.json({ message: 'تم حذف المحتوى من قاعدة البيانات بنجاح' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'فشل في حذف المحتوى' });
   }
 });
