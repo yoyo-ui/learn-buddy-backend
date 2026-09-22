@@ -5,15 +5,15 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { google } = require('googleapis');
-const fs = require('fs');
+const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// إعداد التخزين المؤقت للملفات قبل رفعها لجوجل درايف
-const upload = multer({ dest: 'uploads/' });
+// تخزين الملفات مؤقتاً في الذاكرة (Memory Storage) لتوافقية سيرفرات Vercel والبيئة السحابية
+const upload = multer({ storage: multer.memoryStorage() });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -115,14 +115,18 @@ app.post('/api/content', authenticateToken, upload.single('file'), async (req, r
 
   try {
     if (req.file) {
-      const filePath = req.file.path;
+      const bufferStream = new Readable();
+      bufferStream.push(req.file.buffer);
+      bufferStream.push(null);
+
       const fileMetadata = {
         name: req.file.originalname,
         parents: [process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID],
       };
+      
       const media = {
         mimeType: req.file.mimetype,
-        body: fs.createReadStream(filePath),
+        body: bufferStream,
       };
 
       const driveResponse = await drive.files.create({
@@ -132,7 +136,6 @@ app.post('/api/content', authenticateToken, upload.single('file'), async (req, r
       });
 
       fileId = driveResponse.data.id;
-      fs.unlinkSync(filePath);
     }
 
     const result = await pool.query(
