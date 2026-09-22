@@ -5,25 +5,21 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { google } = require('googleapis');
-const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// التأكد من وجود مجلد التخزين المؤقت للملفات
-if (!fs.existsSync('uploads')) {
-    fs.mkdirSync('uploads');
-}
-const upload = multer({ dest: 'uploads/' });
+// تعديل الـ multer ليستخدم الذاكرة بدلاً من الكتابة على النظام (لتجنب خطأ EROFS على Vercel)
+const upload = multer({ storage: multer.memoryStorage() });
 
-// الاتصال بقاعدة بيانات Supabase باستخدام رابط الـ DATABASE_URL
+// الاتصال بقاعدة بيانات Supabase
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// إعداد Google Drive API (تأكد من وجود ملف credentials.json أو إعدادات الخدمة)
+// إعداد Google Drive API
 const auth = new google.auth.GoogleAuth({
     keyFile: 'credentials.json',
     scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.readonly']
@@ -32,7 +28,7 @@ const drive = google.drive({ version: 'v3', auth });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'learn_buddy_secret_key_2026';
 
-// Middleware للتحقق من صلاحيات المشرف (Admin Auth)
+// Middleware للتحقق من المشرف
 function verifyToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -77,7 +73,7 @@ app.get('/api/categories', async (req, res) => {
     }
 });
 
-// 3. إضافة مادة جديدة (للمشرف فقط)
+// 3. إضافة مادة جديدة (وربطها بفولدر الدرايف)
 app.post('/api/categories', verifyToken, async (req, res) => {
     const { title, description } = req.body;
     try {
@@ -92,7 +88,7 @@ app.post('/api/categories', verifyToken, async (req, res) => {
     }
 });
 
-// 4. حذف مادة (للمشرف فقط)
+// 4. حذف مادة
 app.delete('/api/categories/:id', verifyToken, async (req, res) => {
     const { id } = req.params;
     try {
@@ -104,49 +100,7 @@ app.delete('/api/categories/:id', verifyToken, async (req, res) => {
     }
 });
 
-// 5. جلب محتوى/دروس مادة معينة
-app.get('/api/content/category/:categoryId', async (req, res) => {
-    const { categoryId } = req.params;
-    try {
-        const result = await pool.query('SELECT * FROM content WHERE category_id = $1 ORDER BY created_at ASC', [categoryId]);
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'فشل في جلب المحتوى' });
-    }
-});
-
-// 6. إضافة محتوى أو درس ورفعه لـ Google Drive (للمشرف فقط)
-app.post('/api/content', verifyToken, upload.single('file'), async (req, res) => {
-    const { category_id, title, description, content_type, file_id } = req.body;
-    try {
-        let finalFileId = file_id;
-
-        // لو تم رفع ملف من الجهاز، نقوم برفعه أوتوماتيكياً لجوجل درايف
-        if (req.file) {
-            const fileMetadata = { name: req.file.originalname };
-            const media = { mimeType: req.file.mimetype, body: fs.createReadStream(req.file.path) };
-            const driveResponse = await drive.files.create({
-                resource: fileMetadata,
-                media: media,
-                fields: 'id'
-            });
-            finalFileId = driveResponse.data.id;
-            fs.unlinkSync(req.file.path); // حذف الملف من السيرفر المؤقت
-        }
-
-        const result = await pool.query(
-            'INSERT INTO content (category_id, title, description, content_type, file_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [category_id, title, description, content_type, finalFileId]
-        );
-        res.json(result.rows[0]);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'فشل في رفع وحفظ المحتوى' });
-    }
-});
-
-// 7. قراءة هيكل فولدر جوجل درايف وترتيبه كأقسام ودروس تلقائياً
+// 5. جلب هيكل فولدر جوجل درايف (الأقسام والدروس أوتوماتيك)
 app.get('/api/drive-folder/:folderId', async (req, res) => {
     try {
         const parentFolderId = req.params.folderId;
@@ -170,6 +124,7 @@ app.get('/api/drive-folder/:folderId', async (req, res) => {
                 structure.push({
                     sectionId: item.id,
                     sectionName: item.name,
+                    type: 'folder',
                     lessons: subResponse.data.files.map(sub => ({
                         id: sub.id,
                         title: sub.name,
@@ -177,12 +132,24 @@ app.get('/api/drive-folder/:folderId', async (req, res) => {
                         type: sub.mimeType.includes('folder') ? 'subfolder' : 'file'
                     }))
                 });
+            } else {
+                structure.push({
+                    sectionId: item.id,
+                    sectionName: 'ملفات عامة',
+                    type: 'file',
+                    lessons: [{
+                        id: item.id,
+                        title: item.name,
+                        link: item.webViewLink,
+                        type: 'file'
+                    }]
+                });
             }
         }
         res.json({ success: true, structure });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'فشل في قراءة فولدر جوجل درايف' });
+        console.error('Error fetching drive folder:', error);
+        res.status(500).json({ error: 'فشل في قراءة محتويات فولدر جوجل درايف' });
     }
 });
 
