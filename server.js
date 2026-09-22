@@ -19,14 +19,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// إعداد Google Drive API
+// إعداد Google Drive API باستخدام الـ Environment Variables
 const auth = new google.auth.GoogleAuth({
-  keyFile: 'google-credentials.json', // اسم ملف الـ JSON اللي حطيته في الفولتر
+  credentials: {
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+    private_key: process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
+  },
   scopes: ['https://www.googleapis.com/auth/drive.file'],
 });
 const drive = google.drive({ version: 'v3', auth });
 
-// Middleware للتحقق من الـ Token
+// Middleware للتحقق من الـ Token (حماية الـ Routes)
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -106,13 +109,11 @@ app.get('/api/content/category/:categoryId', async (req, res) => {
   }
 });
 
-// رفع ملف لجوجل درايف وحفظ بياناته في الداتا بيز
 app.post('/api/content', authenticateToken, upload.single('file'), async (req, res) => {
   const { category_id, title, description, content_type, thumbnail_url, sort_order, visible } = req.body;
   let fileId = null;
 
   try {
-    // لو فيه ملف مرفوع، نرفعه لـ Google Drive أولاً
     if (req.file) {
       const filePath = req.file.path;
       const fileMetadata = {
@@ -131,12 +132,9 @@ app.post('/api/content', authenticateToken, upload.single('file'), async (req, r
       });
 
       fileId = driveResponse.data.id;
-
-      // حذف الملف المؤقت من السيرفر المحلي
       fs.unlinkSync(filePath);
     }
 
-    // حفظ البيانات في داتا بيز Supabase
     const result = await pool.query(
       'INSERT INTO content (category_id, title, description, content_type, file_id, thumbnail_url, sort_order, visible) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
       [category_id, title, description, content_type, fileId, thumbnail_url, sort_order || 0, visible ?? true]
@@ -149,19 +147,23 @@ app.post('/api/content', authenticateToken, upload.single('file'), async (req, r
   }
 });
 
-// حذف المحتوى من الداتا بيز فقط (Google Drive آمن تماماً ولا يتم حذفه)
 app.delete('/api/content/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query('DELETE FROM content WHERE id = $1 RETURNING *', [id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'المحتوى غير موجود' });
-    res.json({ message: 'تم حذف المحتوى من قاعدة البيانات بنجاح (الملف ما زال محفوظاً في Google Drive)' });
+    res.json({ message: 'تم حذف المحتوى من قاعدة البيانات بنجاح' });
   } catch (err) {
     res.status(500).json({ error: 'فشل في حذف المحتوى' });
   }
 });
 
+// التشغيل المحلي أو التوافق مع Vercel
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Learn Buddy Backend running on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
